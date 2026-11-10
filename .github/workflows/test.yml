@@ -1,0 +1,86 @@
+name: test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: shellcheck scripts/*.sh test/*.sh
+
+  # Not a pols runner: actions/checkout.
+  upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: action
+          persist-credentials: false
+      - id: co
+        uses: ./action
+        with:
+          path: work
+      - run: |
+          test "${{ steps.co.outputs.cached }}" = false
+          test "$(git -C work rev-parse HEAD)" = "$GITHUB_SHA"
+          test "${{ steps.co.outputs.commit }}" = "$GITHUB_SHA"
+
+  # As on a pols runner with a cache: the first checkout fills the mirror,
+  # the next ones read from it.
+  cached:
+    runs-on: ubuntu-latest
+    env:
+      POLS_CACHE_STATUS: /tmp/pols/cache.json
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: action
+          persist-credentials: false
+      - run: |
+          mkdir -p /tmp/pols-cache /tmp/pols
+          echo '{"state":"ready","path":"/tmp/pols-cache","repository":"x/y","saved":true}' > /tmp/pols/cache.json
+      - id: one
+        uses: ./action
+        with:
+          path: one
+      - id: two
+        uses: ./action
+        with:
+          path: two
+          fetch-depth: 0
+      - run: |
+          for d in one two; do
+            test "$(git -C "$d" rev-parse HEAD)" = "$GITHUB_SHA"
+            test -s "$d/.git/objects/info/alternates"
+            test -z "$(git -C "$d" status --porcelain)"
+          done
+          test "${{ steps.one.outputs.cached }}" = true
+          test "${{ steps.two.outputs.cached }}" = true
+          test "${{ steps.one.outputs.commit }}" = "$GITHUB_SHA"
+          git -C two branch -r | grep -q origin/
+          test -d "/tmp/pols-cache/git/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]').git"
+      # A checkout the cached path does not do goes to actions/checkout.
+      - id: sparse
+        uses: ./action
+        with:
+          path: sparse
+          sparse-checkout: scripts
+      - run: |
+          test "${{ steps.sparse.outputs.cached }}" = false
+          test -f sparse/scripts/checkout.sh
+
+  # Another repository, branches, SHAs and paths, against the script.
+  script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: bash test/local.sh
